@@ -15,7 +15,6 @@ def make_celery(app):
     celery = Celery(
         app.import_name,
         backend='redis://localhost:6379/0',
-        broker='amqp://<user>:<password>$@localhost:5672//'
     )
     celery.conf.update(app.config)
     class ContextTask(celery.Task):
@@ -39,12 +38,22 @@ def allowed_file(filename):
 @app.route('/check_task/<task_id>')
 def check_task(task_id):
     task = process_audio.AsyncResult(task_id)
-    response = {
-        'status': task.state,
-        'info': task.info.get('info', 'COMPLETED'),
-        'filename': task.info.get('audio_filename', '')
-    }
+    response = {'status': task.state}
+    
+    if task.state == 'FAILURE':
+        response['info'] = str(task.result)
+        response['filename'] = ''
+    elif task.state == 'SUCCESS':
+        response['info'] = task.info.get('info', 'COMPLETED') if task.info else 'COMPLETED'
+        response['filename'] = task.info.get('audio_filename', '') if task.info else ''
+        response['summary'] = task.info.get('summary', '') if task.info else ''
+    else:
+        response['info'] = 'Task is still processing'
+        response['filename'] = ''
+
     return jsonify(response)
+
+
 
 @app.route('/audio/<filename>')
 def send_audio(filename):
@@ -53,11 +62,22 @@ def send_audio(filename):
 @app.route('/results/<task_id>')
 def results(task_id):
     task = process_audio.AsyncResult(task_id)
-    if task.state == 'SUCCESS':
-        result = task.result
-        file_type = 'video' if result['audio_filename'].endswith(('.mp4', '.mov', '.avi')) else 'audio'
-        return render_template('result.html', minutes_of_meeting=result['summary'], recording_status = "Completed", recording_filename = result['audio_filename'], audio_path=os.path.join('/audio', result['audio_filename']), file_type=file_type)
-    return render_template('result.html', minutes_of_meeting=result['summary'], recording_status = "Unknown", recording_filename = result['audio_filename'], audio_path=os.path.join('/audio', "#"))
+
+    if task.state == 'PENDING':
+        # Task is still in progress
+        return render_template('result.html', minutes_of_meeting="Task is still processing", recording_status="Pending", recording_filename="", audio_path="#")
+
+    elif task.state != 'FAILURE':
+        result = task.result or {}
+        minutes_of_meeting = result.get('summary', 'No summary available')
+        recording_status = "Unknown"
+        recording_filename = result.get('audio_filename', '')
+        audio_path = os.path.join('/audio', recording_filename) if recording_filename else '#'
+        return render_template('result.html', minutes_of_meeting=minutes_of_meeting, recording_status=recording_status, recording_filename=recording_filename, audio_path=audio_path)
+
+    else:
+        # Something went wrong with the task
+        return render_template('result.html', minutes_of_meeting="Task failed", recording_status="Failed", recording_filename="", audio_path="#")
 
 @app.route('/')
 def index():
@@ -83,4 +103,5 @@ def upload_file():
     return jsonify({'task_id': task.id})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # app.run(debug=True)
+    app.run(port=50021)

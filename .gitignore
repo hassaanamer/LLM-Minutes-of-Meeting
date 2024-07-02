@@ -8,3 +8,4 @@ celery.logs
 data
 db
 models
+env
